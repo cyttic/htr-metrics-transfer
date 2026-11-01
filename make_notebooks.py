@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Generates the A5000 notebooks of the augmentation / training-free-metrics study (wave 1).
+"""Generates the A5000 notebooks of the augmentation / training-free-metrics study (waves 1 and 2).
 
     /mnt/ssd2/cyttic/ml_env/bin/python make_notebooks.py
 -> train_trocrctc.ipynb   TrOCR-base ViT encoder + one linear CTC classifier (the exp38/Option-B recipe), greedy decoding
    train_htrvt.ipynb      CNN + transformer encoder + CTC trained from scratch (our implementation after HTR-VT), greedy decoding
    queue_wave1.ipynb      2 models x (none + 4 families x 4 levels) = 34 runs, seed 42; each run = one papermill call with parameters
+   train_trocrsmall.ipynb the same TrOCR-CTC recipe on the TrOCR-small STAGE-1 encoder (DeiT-small, synthetic pretraining only, no IAM)
+   queue_wave2.ipynb      TrOCR-small-stage1 x 17 conditions (seed 42), then HTR-VT x 17 conditions with seed 43 = 34 runs
 
 Both training notebooks are parameterised (papermill cell tag "parameters": COND, SEED, REPO_DIR, ...) and import augment.py from
 the repo, the same file the metric computation uses. Data: cyttic/hhd-optionb-split (paragraph- and writer-disjoint). Train = Option-B
@@ -159,7 +161,7 @@ from safetensors.torch import save_file
 save_file({k: v.contiguous() for k, v in model.state_dict().items()}, os.path.join(OUT, "model.safetensors"))
 json.dump({"chars": CHARS}, open(os.path.join(OUT, "charset.json"), "w"), ensure_ascii=False)
 open(os.path.join(OUT, "README.md"), "w", encoding="utf-8").write(
-    f"---\nlicense: mit\nlanguage:\n- he\ntags:\n- htr\n- ctc\n---\n\n# {OUT_REPO}\n\nAugmentation study (htr-metrics-transfer), wave 1. "
+    f"---\nlicense: mit\nlanguage:\n- he\ntags:\n- htr\n- ctc\n---\n\n# {OUT_REPO}\n\nAugmentation study (htr-metrics-transfer). "
     f"Model `{MODEL}`, augmentation `{COND}`, seed {SEED}. Trained on `cyttic/hhd-optionb-split` train minus the dev writers; "
     f"HHD Option-B test, greedy decoding, no LM: CER {T['cer']:.4f}, WER {T['wer']:.4f}. Details in results.json.\n")
 if PUSH and not SMOKE:
@@ -184,8 +186,8 @@ PUSH, SMOKE = True, False
 '''
 TROCR_CFG = r'''
 import os, math
-MODEL = "trocrctc"
-CONFIG = {"enc": "microsoft/trocr-base-handwritten", "row_h": 64, "sub": 2, "batch": 32, "lr_enc": 5e-05, "lr_head": 3e-4, "warmup": 0.05,
+MODEL = "__MODEL__"
+CONFIG = {"enc": "__ENC__", "row_h": 64, "sub": 2, "batch": 32, "lr_enc": 5e-05, "lr_head": 3e-4, "warmup": 0.05,
           "wd": 0.01, "epochs": 40, "eval_every": 5, "schedule": "linear warm-up + linear decay"}
 ENC_SRC, ROW_H, SUB, BATCH = CONFIG["enc"], CONFIG["row_h"], CONFIG["sub"], CONFIG["batch"]
 LR_ENC, LR_HEAD, WARMUP, WD, EPOCHS, EVAL_EVERY = CONFIG["lr_enc"], CONFIG["lr_head"], CONFIG["warmup"], CONFIG["wd"], CONFIG["epochs"], CONFIG["eval_every"]
@@ -216,7 +218,7 @@ class EncoderLinearCTC(nn.Module):
         self.classifier = nn.Linear(self.k * self.Hd, SUB * N_CLASSES)
         nn.init.trunc_normal_(self.classifier.weight, std=0.02); nn.init.zeros_(self.classifier.bias)
     def forward(self, px, lens=None):   # lens unused: every input is a full 384x384 square
-        tok = self.vit(pixel_values=px).last_hidden_state[:, 1:]; B = tok.shape[0]
+        tok = self.vit(pixel_values=px).last_hidden_state[:, -576:]; B = tok.shape[0]   # the 24x24 patch tokens (ViT: after CLS; DeiT: after CLS + distillation)
         g = tok.reshape(B, 24, 24, self.Hd)[:, :RROWS * self.k]
         g = g.reshape(B, RROWS, self.k, 24, self.Hd).permute(0, 1, 3, 2, 4).reshape(B, RROWS * 24, self.k * self.Hd)
         return F.log_softmax(self.classifier(g).reshape(B, RROWS * 24 * SUB, N_CLASSES).float(), dim=-1)
@@ -321,24 +323,30 @@ COMMON = ("Augmentation study, wave 1. Data `cyttic/hhd-optionb-split`: train = 
           "after the last epoch, **greedy CTC decoding, no language model** (CER, CER without punctuation, WER).")
 TRO = training_nb("TrOCR-CTC (pretrained ViT + linear CTC head), greedy",
                   "TrOCR-base handwritten ViT encoder + ONE linear CTC classifier (exp38 / Option-B recipe), 40 epochs fixed "
-                  "(the epoch count the Option-B HHD-only runs selected). " + COMMON, TROCR_PARAMS, TROCR_CFG, TROCR_FMT, TROCR_MODEL)
+                  "(the epoch count the Option-B HHD-only runs selected). " + COMMON, TROCR_PARAMS,
+                  TROCR_CFG.replace("__MODEL__", "trocrctc").replace("__ENC__", "microsoft/trocr-base-handwritten"), TROCR_FMT, TROCR_MODEL)
+TRS = training_nb("TrOCR-small stage 1 + linear CTC head, greedy",
+                  "Encoder of `microsoft/trocr-small-stage1` (DeiT-small, 384-dim, pretrained on large synthetic text-line data only, "
+                  "NOT fine-tuned on IAM) + ONE linear CTC classifier: exactly the TrOCR-CTC recipe (same tiling, learning rates, 40 epochs), "
+                  "only the encoder differs. " + COMMON, TROCR_PARAMS,
+                  TROCR_CFG.replace("__MODEL__", "trocrsmall").replace("__ENC__", "microsoft/trocr-small-stage1"), TROCR_FMT, TROCR_MODEL)
 HTV = training_nb("HTR-VT (CNN + transformer + CTC, from scratch), greedy",
                   "Our implementation after HTR-VT (Li et al., Pattern Recognition 2025): residual CNN front-end, span masking, 6-layer "
                   "transformer encoder (dim 384), linear CTC head, trained from scratch, 300 epochs fixed (dev curve logged to check the budget). "
                   + COMMON, HTRVT_PARAMS, HTRVT_CFG, HTRVT_FMT, HTRVT_MODEL)
 
-RUNS = [("trocrctc", "none"), ("htrvt", "none")] + [("trocrctc", c) for c in CONDS[1:]] + [("htrvt", c) for c in CONDS[1:]]
-QUEUE_SRC = r'''
+def queue_nb(wave, runs, intro):
+    src = r"""
 import os, json, time, traceback, shutil
 import papermill as pm
 from huggingface_hub import HfApi, hf_hub_download
-SEED = 42
-RUNS = ''' + json.dumps(RUNS) + r'''
-NB = {"trocrctc": "train_trocrctc.ipynb", "htrvt": "train_htrvt.ipynb"}
-HERE = os.getcwd(); BASE = os.path.expanduser("~/work/hmt_wave1"); os.makedirs(BASE, exist_ok=True)
+WAVE = "__WAVE__"
+RUNS = __RUNS__   # (model, condition, seed)
+NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb"}
+HERE = os.getcwd(); BASE = os.path.expanduser(f"~/work/hmt_{WAVE}"); os.makedirs(BASE, exist_ok=True)
 api = HfApi(); LOGS = "cyttic/a5000-queue-logs"   # PUBLIC dataset: executed notebooks of failed runs (tracebacks)
 api.create_repo(LOGS, repo_type="dataset", private=False, exist_ok=True)
-def repo(m, c): return f"cyttic/hmt-{m}-{c}-s{SEED}"
+def repo(m, c, s): return f"cyttic/hmt-{m}-{c}-s{s}"
 def done(r):
     try: return "results.json" in api.list_repo_files(r)
     except Exception: return False
@@ -346,39 +354,45 @@ def push_log(path, name):
     try: api.upload_file(path_or_fileobj=path, path_in_repo=f"{name}.ipynb", repo_id=LOGS, repo_type="dataset", commit_message=f"failed run {name}"); print("log ->", f"{LOGS}/{name}.ipynb", flush=True)
     except Exception as e: print("log upload failed", repr(e)[:200], flush=True)
 status = {}
-for i, (m, c) in enumerate(RUNS, 1):
-    r, name = repo(m, c), f"hmt_{m}_{c}_s{SEED}"
+for i, (m, c, s) in enumerate(RUNS, 1):
+    r, name = repo(m, c, s), f"hmt_{m}_{c}_s{s}"
     if done(r): print(f"[{i}/{len(RUNS)}] {name}: already on HF, skipped", flush=True); status[name] = "skipped (done)"; continue
     wd = os.path.join(BASE, name); os.makedirs(wd, exist_ok=True); t0 = time.time()
     print(f"[{i}/{len(RUNS)}] {name} -> {r}  started {time.strftime('%H:%M')}", flush=True)
     try:
         pm.execute_notebook(os.path.join(HERE, NB[m]), os.path.join(wd, name + ".ipynb"), cwd=wd, log_output=True, kernel_name="python3",
-                            parameters={"COND": c, "SEED": SEED, "REPO_DIR": HERE})
+                            parameters={"COND": c, "SEED": s, "REPO_DIR": HERE})
         status[name] = f"ok ({(time.time() - t0) / 3600:.2f} h)" if done(r) else "finished, but results.json not on HF"
         if done(r): shutil.rmtree(wd, ignore_errors=True)   # pushed: free the disk
     except Exception as e:
-        status[name] = "FAILED: " + repr(e)[:300]; traceback.print_exc(); push_log(os.path.join(wd, name + ".ipynb"), "hmt_wave1__" + name)
+        status[name] = "FAILED: " + repr(e)[:300]; traceback.print_exc(); push_log(os.path.join(wd, name + ".ipynb"), f"hmt_{WAVE}__" + name)
     print(f"[{i}/{len(RUNS)}] {name}: {status[name]}", flush=True)
 print("\n==== queue summary"); [print(f"{k:45s} {v}") for k, v in status.items()]
-'''
-RESULTS_SRC = r'''
-for m, c in RUNS:
-    r = repo(m, c)
+""".replace("__WAVE__", wave).replace("__RUNS__", json.dumps(runs))
+    res = r"""
+for m, c, s in RUNS:
+    r = repo(m, c, s)
     if not done(r): print(f"{r}: no results"); continue
     T = json.load(open(hf_hub_download(r, "results.json", force_download=True)))["final"]["test_greedy"]
-    print(f"{r:40s} CER {100*T['cer']:.2f} | WER {100*T['wer']:.2f}")
-'''
-QUEUE = nb([
-    ("markdown", f"# Queue: augmentation study, wave 1 — {len(RUNS)} runs, seed 42\n\n"
-                 "Models: TrOCR-CTC (`train_trocrctc.ipynb`) and HTR-VT from scratch (`train_htrvt.ipynb`). Conditions: `none` + "
-                 "4 families (geom, elastic, stroke, photo) x levels 1-4 (`augment.py`). Order: both baselines, then all TrOCR-CTC runs, then "
-                 "all HTR-VT runs. Each run pushes to its own public HF repo `cyttic/hmt-<model>-<cond>-s42`; a run whose repo already holds "
-                 "`results.json` is skipped, so re-running resumes the queue. A failed run's executed notebook goes to the public HF dataset "
-                 "`cyttic/a5000-queue-logs`. The local run folder is deleted after a successful push.\n\n"
-                 "Start on the server: `./run.sh queue_wave1.ipynb` (inside tmux)."),
-    ("code", QUEUE_SRC), ("markdown", "## Results on HF"), ("code", RESULTS_SRC)])
+    print(f"{r:44s} CER {T['cer']:.4f} | WER {T['wer']:.4f}")
+"""
+    return nb([("markdown", f"# Queue: augmentation study, {wave} — {len(runs)} runs\n\n{intro}\n\nEach run pushes to its own public HF repo "
+                            "`cyttic/hmt-<model>-<cond>-s<seed>`; a run whose repo already holds `results.json` is skipped, so re-running resumes "
+                            "the queue. A failed run's executed notebook goes to the public HF dataset `cyttic/a5000-queue-logs`. The local run "
+                            f"folder is deleted after a successful push.\n\nStart on the server: `./run.sh queue_{wave}.ipynb` (inside tmux)."),
+               ("code", src), ("markdown", "## Results on HF"), ("code", res)])
 
-for name, obj in (("train_trocrctc.ipynb", TRO), ("train_htrvt.ipynb", HTV), ("queue_wave1.ipynb", QUEUE)):
+
+RUNS1 = [("trocrctc", "none", 42), ("htrvt", "none", 42)] + [("trocrctc", c, 42) for c in CONDS[1:]] + [("htrvt", c, 42) for c in CONDS[1:]]
+RUNS2 = [("trocrsmall", c, 42) for c in CONDS] + [("htrvt", c, 43) for c in CONDS]
+QUEUE = queue_nb("wave1", RUNS1, "Models: TrOCR-CTC (`train_trocrctc.ipynb`) and HTR-VT from scratch (`train_htrvt.ipynb`), seed 42. Conditions: "
+                 "`none` + 4 families (geom, elastic, stroke, photo) x levels 1-4 (`augment.py`). Order: both baselines, then all TrOCR-CTC runs, "
+                 "then all HTR-VT runs.")
+QUEUE2 = queue_nb("wave2", RUNS2, "First TrOCR-small stage 1 (`train_trocrsmall.ipynb`, seed 42, all 17 conditions, ~10-15 min each), then "
+                  "HTR-VT (`train_htrvt.ipynb`) with seed 43 on all 17 conditions (~2.2 h each): the replication of the wave-1 HTR-VT runs.")
+
+for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
+                  ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2)):
     json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("->", os.path.join(HERE, name))
-print(len(RUNS), "runs in the queue")
+print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2")
