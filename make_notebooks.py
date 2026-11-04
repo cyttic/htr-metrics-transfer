@@ -7,6 +7,10 @@
    queue_wave1.ipynb      2 models x (none + 4 families x 4 levels) = 34 runs, seed 42; each run = one papermill call with parameters
    train_trocrsmall.ipynb the same TrOCR-CTC recipe on the TrOCR-small STAGE-1 encoder (DeiT-small, synthetic pretraining only, no IAM)
    queue_wave2.ipynb      TrOCR-small-stage1 x 17 conditions (seed 42), then HTR-VT x 17 conditions with seed 43 = 34 runs
+   train_trocrscratch.ipynb  the TrOCR-small architecture (DeiT-small config) RANDOMLY initialised + linear CTC head, trained from scratch
+                          with HTR-VT's from-scratch schedule (lr 5e-4, wd 0.05, 300 epochs, cosine) -- does pretraining explain why the
+                          metrics predict HTR-VT's CER but not TrOCR's?
+   queue_scratchcheck.ipynb  feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 = 3 runs
 
 Both training notebooks are parameterised (papermill cell tag "parameters": COND, SEED, REPO_DIR, ...) and import augment.py from
 the repo, the same file the metric computation uses. Data: cyttic/hhd-optionb-split (paragraph- and writer-disjoint). Train = Option-B
@@ -228,6 +232,29 @@ PARAM_GROUPS = [{"params": list(model.vit.parameters()), "lr": LR_ENC}, {"params
 print(f"encoder {sum(p.numel() for p in model.vit.parameters())/1e6:.1f}M | classifier {sum(p.numel() for p in model.classifier.parameters())/1e6:.2f}M")
 '''
 
+# ------------------------------------------------------------------ TrOCR-small architecture, random init (from scratch)
+SCRATCH_CFG = r'''
+import os, math
+MODEL = "trocrscratch"
+CONFIG = {"enc_config": "microsoft/trocr-small-stage1", "init": "random", "row_h": 64, "sub": 2, "batch": 32, "lr": 5e-4, "warmup": 0.05,
+          "wd": 0.05, "epochs": 300, "eval_every": 10, "schedule": "linear warm-up + cosine decay to 1% of the peak (as HTR-VT)"}
+ENC_CFG_SRC, ROW_H, SUB, BATCH = CONFIG["enc_config"], CONFIG["row_h"], CONFIG["sub"], CONFIG["batch"]
+LR, WARMUP, WD, EPOCHS, EVAL_EVERY = CONFIG["lr"], CONFIG["warmup"], CONFIG["wd"], CONFIG["epochs"], CONFIG["eval_every"]
+NUM_WORKERS, EVAL_BS = min(8, os.cpu_count()), 64
+def schedule(step, total, warm):
+    if step < warm: return (step + 1) / warm
+    return 0.01 + 0.99 * 0.5 * (1 + math.cos(math.pi * (step - warm) / max(1, total - warm)))
+'''
+SCRATCH_MODEL = (TROCR_MODEL
+    .replace("from transformers import VisionEncoderDecoderModel", "from transformers import AutoModel, VisionEncoderDecoderConfig")
+    .replace("model = EncoderLinearCTC(VisionEncoderDecoderModel.from_pretrained(ENC_SRC).encoder).to(device)",
+             "enc_cfg = VisionEncoderDecoderConfig.from_pretrained(ENC_CFG_SRC).encoder   # architecture only: NO pretrained weights\n"
+             "model = EncoderLinearCTC(AutoModel.from_config(enc_cfg)).to(device)\n"
+             "print(\"random init:\", type(model.vit).__name__, enc_cfg.hidden_size, \"dim,\", enc_cfg.num_hidden_layers, \"layers\")")
+    .replace('PARAM_GROUPS = [{"params": list(model.vit.parameters()), "lr": LR_ENC}, {"params": list(model.classifier.parameters()), "lr": LR_HEAD}]',
+             'PARAM_GROUPS = [{"params": list(model.parameters()), "lr": LR}]'))
+assert SCRATCH_MODEL.count("AutoModel.from_config") == 1 and SCRATCH_MODEL.count("LR_ENC") == 0
+
 # ------------------------------------------------------------------ HTR-VT
 HTRVT_PARAMS = TROCR_PARAMS
 HTRVT_CFG = r'''
@@ -330,6 +357,12 @@ TRS = training_nb("TrOCR-small stage 1 + linear CTC head, greedy",
                   "NOT fine-tuned on IAM) + ONE linear CTC classifier: exactly the TrOCR-CTC recipe (same tiling, learning rates, 40 epochs), "
                   "only the encoder differs. " + COMMON, TROCR_PARAMS,
                   TROCR_CFG.replace("__MODEL__", "trocrsmall").replace("__ENC__", "microsoft/trocr-small-stage1"), TROCR_FMT, TROCR_MODEL)
+TSC = training_nb("TrOCR-small architecture, RANDOM init + linear CTC head (from scratch), greedy",
+                  "The TrOCR-small encoder architecture (DeiT-small config of `microsoft/trocr-small-stage1`: 12 layers, 384-dim, 384x384 input, "
+                  "16 px patches) with **random weights** + ONE linear CTC classifier; same tiling and head as TrOCR-CTC. Trained from scratch "
+                  "with HTR-VT's schedule (AdamW lr 5e-4, wd 0.05, warm-up 5% + cosine to 1%, 300 epochs, batch 32). Question: does "
+                  "pretraining explain why the metrics predict HTR-VT's CER but not TrOCR's? " + COMMON, TROCR_PARAMS,
+                  SCRATCH_CFG, TROCR_FMT, SCRATCH_MODEL)
 HTV = training_nb("HTR-VT (CNN + transformer + CTC, from scratch), greedy",
                   "Our implementation after HTR-VT (Li et al., Pattern Recognition 2025): residual CNN front-end, span masking, 6-layer "
                   "transformer encoder (dim 384), linear CTC head, trained from scratch, 300 epochs fixed (dev curve logged to check the budget). "
@@ -342,7 +375,7 @@ import papermill as pm
 from huggingface_hub import HfApi, hf_hub_download
 WAVE = "__WAVE__"
 RUNS = __RUNS__   # (model, condition, seed)
-NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb"}
+NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb", "trocrscratch": "train_trocrscratch.ipynb"}
 HERE = os.getcwd(); BASE = os.path.expanduser(f"~/work/hmt_{WAVE}"); os.makedirs(BASE, exist_ok=True)
 api = HfApi(); LOGS = "cyttic/a5000-queue-logs"   # PUBLIC dataset: executed notebooks of failed runs (tracebacks)
 api.create_repo(LOGS, repo_type="dataset", private=False, exist_ok=True)
@@ -385,14 +418,19 @@ for m, c, s in RUNS:
 
 RUNS1 = [("trocrctc", "none", 42), ("htrvt", "none", 42)] + [("trocrctc", c, 42) for c in CONDS[1:]] + [("htrvt", c, 42) for c in CONDS[1:]]
 RUNS2 = [("trocrsmall", c, 42) for c in CONDS] + [("htrvt", c, 43) for c in CONDS]
+RUNS_SC = [("trocrscratch", c, 42) for c in ("none", "geom2", "elastic4")]
 QUEUE = queue_nb("wave1", RUNS1, "Models: TrOCR-CTC (`train_trocrctc.ipynb`) and HTR-VT from scratch (`train_htrvt.ipynb`), seed 42. Conditions: "
                  "`none` + 4 families (geom, elastic, stroke, photo) x levels 1-4 (`augment.py`). Order: both baselines, then all TrOCR-CTC runs, "
                  "then all HTR-VT runs.")
 QUEUE2 = queue_nb("wave2", RUNS2, "First TrOCR-small stage 1 (`train_trocrsmall.ipynb`, seed 42, all 17 conditions, ~10-15 min each), then "
                   "HTR-VT (`train_htrvt.ipynb`) with seed 43 on all 17 conditions (~2.2 h each): the replication of the wave-1 HTR-VT runs.")
+QUEUE_SC = queue_nb("scratchcheck", RUNS_SC, "Feasibility check: the TrOCR-small architecture trained FROM SCRATCH (`train_trocrscratch.ipynb`, "
+                    "random init, 300 epochs, ~1.5-2 h each), seed 42, on `none`, `geom2` and `elastic4`. Go on to all 17 conditions only "
+                    "if the CER is usable (roughly under 20-25%) and the three conditions clearly differ.")
 
 for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
-                  ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2)):
+                  ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
+                  ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC)):
     json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("->", os.path.join(HERE, name))
-print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2")
+print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check")

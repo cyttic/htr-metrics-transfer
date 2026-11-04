@@ -12,6 +12,10 @@ language model. Results go to Hugging Face (public); this repo holds code only.
 | `train_trocrctc.ipynb` | TrOCR-base ViT + one linear CTC head (pretrained encoder), 40 epochs |
 | `train_htrvt.ipynb` | our implementation after HTR-VT (CNN + transformer + CTC, from scratch), 300 epochs |
 | `queue_wave1.ipynb` | wave 1: 2 models x (none + 4 families x 4 levels) = 34 runs, seed 42 -> `cyttic/hmt-<model>-<cond>-s42` |
+| `train_trocrsmall.ipynb` / `queue_wave2.ipynb` | wave 2: TrOCR-small stage 1 x 17 conditions (seed 42) + HTR-VT seed 43 x 17 |
+| `train_trocrscratch.ipynb` | TrOCR-small architecture, random init + linear CTC head, from scratch (HTR-VT schedule: lr 5e-4, 300 epochs) |
+| `queue_scratchcheck.ipynb` | feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 -> `cyttic/hmt-trocrscratch-<cond>-s42` |
+| `lofo.py` | leave-one-family-out test of the metrics against every run's test CER (local; writes `results/`, not in git) |
 
 Split: train = Option-B train minus the dev writers (20%, seed 42); dev = the unlabeled target sample for the metrics (also scored every
 few epochs as a learning curve, nothing selected on it); test = Option-B test, scored once after the last epoch.
@@ -20,5 +24,5 @@ few epochs as a learning curve, nothing selected on it); test = Option-B test, s
 
 Once: `git clone https://github.com/cyttic/htr-metrics-transfer.git` (venv `~/env` with papermill, `hf auth login` done).
 
-Run: `cd ~/htr-metrics-transfer && git pull`, then `tmux new -s hmt` and `./run.sh queue_wave1.ipynb`.
+Run: `cd ~/htr-metrics-transfer && git pull`, then `tmux new -s hmt` and `./run.sh queue_<name>.ipynb` (e.g. `queue_scratchcheck.ipynb`).
 Re-running the queue skips runs already on HF. Failed runs' executed notebooks go to the HF dataset `cyttic/a5000-queue-logs`.
