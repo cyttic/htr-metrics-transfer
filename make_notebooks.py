@@ -419,6 +419,7 @@ for m, c, s in RUNS:
 RUNS1 = [("trocrctc", "none", 42), ("htrvt", "none", 42)] + [("trocrctc", c, 42) for c in CONDS[1:]] + [("htrvt", c, 42) for c in CONDS[1:]]
 RUNS2 = [("trocrsmall", c, 42) for c in CONDS] + [("htrvt", c, 43) for c in CONDS]
 RUNS_SC = [("trocrscratch", c, 42) for c in ("none", "geom2", "elastic4")]
+RUNS3 = [("trocrscratch", c, 42) for c in CONDS]
 QUEUE = queue_nb("wave1", RUNS1, "Models: TrOCR-CTC (`train_trocrctc.ipynb`) and HTR-VT from scratch (`train_htrvt.ipynb`), seed 42. Conditions: "
                  "`none` + 4 families (geom, elastic, stroke, photo) x levels 1-4 (`augment.py`). Order: both baselines, then all TrOCR-CTC runs, "
                  "then all HTR-VT runs.")
@@ -427,10 +428,13 @@ QUEUE2 = queue_nb("wave2", RUNS2, "First TrOCR-small stage 1 (`train_trocrsmall.
 QUEUE_SC = queue_nb("scratchcheck", RUNS_SC, "Feasibility check: the TrOCR-small architecture trained FROM SCRATCH (`train_trocrscratch.ipynb`, "
                     "random init, 300 epochs, ~1.5-2 h each), seed 42, on `none`, `geom2` and `elastic4`. Go on to all 17 conditions only "
                     "if the CER is usable (roughly under 20-25%) and the three conditions clearly differ.")
+QUEUE3 = queue_nb("wave3", RUNS3, "TrOCR-small architecture FROM SCRATCH (`train_trocrscratch.ipynb`, random init, 300 epochs, ~1.25 h each), "
+                  "seed 42, all 17 conditions. The 3 scratch-check runs (none, geom2, elastic4) are already on HF and are skipped: 14 new runs, "
+                  "~18 h.")
 
 for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
                   ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
-                  ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC)):
+                  ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC), ("queue_wave3.ipynb", QUEUE3)):
     json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("->", os.path.join(HERE, name))
-print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check")
+print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check |", len(RUNS3), "runs in wave 3")

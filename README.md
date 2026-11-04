@@ -15,6 +15,7 @@ language model. Results go to Hugging Face (public); this repo holds code only.
 | `train_trocrsmall.ipynb` / `queue_wave2.ipynb` | wave 2: TrOCR-small stage 1 x 17 conditions (seed 42) + HTR-VT seed 43 x 17 |
 | `train_trocrscratch.ipynb` | TrOCR-small architecture, random init + linear CTC head, from scratch (HTR-VT schedule: lr 5e-4, 300 epochs) |
 | `queue_scratchcheck.ipynb` | feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 -> `cyttic/hmt-trocrscratch-<cond>-s42` |
+| `queue_wave3.ipynb` | trocrscratch x all 17 conditions, seed 42 (the 3 scratch-check runs are skipped: 14 new runs, ~18 h) |
 | `lofo.py` | leave-one-family-out test of the metrics against every run's test CER (local; writes `results/`, not in git) |
 
 Split: train = Option-B train minus the dev writers (20%, seed 42); dev = the unlabeled target sample for the metrics (also scored every
