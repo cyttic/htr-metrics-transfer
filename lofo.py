@@ -8,7 +8,7 @@ LOFO = for each family (geom / elastic / stroke / photo): OLS on z-scored X fitt
 Scores on the 16 augmented conditions: MAE (CER points) and Spearman rho (prediction vs CER). Baselines: mean of the other families;
 strength level only. Permutation test (300 shuffles of CER over the 16 conditions): ratio best-combo MAE / baseline MAE vs its null
 (the best combo is re-picked on every shuffle, so the search over 4 x 10 combos is accounted for).
-Targets: trocrctc s42, trocrsmall s42, htrvt s42, htrvt s43, htrvt mean of s42+s43; plus seed agreement of htrvt (s42 vs s43).
+Targets: trocrctc s42, trocrsmall s42, trocrscratch s42 (TrOCR-small architecture, random init), htrvt s42, htrvt s43, htrvt mean of s42+s43; plus seed agreement of htrvt (s42 vs s43).
 
     /mnt/ssd2/cyttic/ml_env/bin/python lofo.py
 -> results/cer.json, results/lofo.json
@@ -58,6 +58,7 @@ def main():
     for g in ["patch", "word", "line", "vit_token"]:
         t = df[df.granularity == g].groupby("condition")[M].mean().loc[CONDS]; t["Vendi_x_A"] = t.Vendi * t.A_dist; T[g] = t
     Y = {"trocrctc_s42": [cer[f"trocrctc-{c}-s42"] for c in CONDS], "trocrsmall_s42": [cer[f"trocrsmall-{c}-s42"] for c in CONDS],
+         "trocrscratch_s42": [cer[f"trocrscratch-{c}-s42"] for c in CONDS],
          "htrvt_s42": [cer[f"htrvt-{c}-s42"] for c in CONDS], "htrvt_s43": [cer[f"htrvt-{c}-s43"] for c in CONDS]}
     Y["htrvt_mean"] = list((np.array(Y["htrvt_s42"]) + np.array(Y["htrvt_s43"])) / 2)
     Y = {k: 100 * np.array(v) for k, v in Y.items()}
