@@ -60,6 +60,8 @@ def main():
     Y = {"trocrctc_s42": [cer[f"trocrctc-{c}-s42"] for c in CONDS], "trocrsmall_s42": [cer[f"trocrsmall-{c}-s42"] for c in CONDS],
          "trocrscratch_s42": [cer[f"trocrscratch-{c}-s42"] for c in CONDS],
          "htrvt_s42": [cer[f"htrvt-{c}-s42"] for c in CONDS], "htrvt_s43": [cer[f"htrvt-{c}-s43"] for c in CONDS]}
+    if all(f"trocrscratchreg-{c}-s42" in cer for c in CONDS):          # ladder A, once all 17 runs are on HF
+        Y["trocrscratchreg_s42"] = [cer[f"trocrscratchreg-{c}-s42"] for c in CONDS]
     Y["htrvt_mean"] = list((np.array(Y["htrvt_s42"]) + np.array(Y["htrvt_s43"])) / 2)
     Y = {k: 100 * np.array(v) for k, v in Y.items()}
     a, b = Y["htrvt_s42"], Y["htrvt_s43"]

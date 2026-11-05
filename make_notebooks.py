@@ -255,6 +255,31 @@ SCRATCH_MODEL = (TROCR_MODEL
              'PARAM_GROUPS = [{"params": list(model.parameters()), "lr": LR}]'))
 assert SCRATCH_MODEL.count("AutoModel.from_config") == 1 and SCRATCH_MODEL.count("LR_ENC") == 0
 
+# ------------------------------------------------------------------ ladder A: TrOCR scratch + HTR-VT's regularisation
+# Same model and schedule as trocrscratch, plus the two regularisers HTR-VT has and trocrscratch lacks: dropout 0.1 in the transformer
+# (DeiT's default is 0.0) and span masking on the patch embeddings (40% of the 16 px columns zeroed during training = HTR-VT's
+# mask_span 4 x stride 4 px; a column = the ROW_H//16 patches of one text row, zeroed before the position embeddings are added).
+SCRATCHREG_CFG = (SCRATCH_CFG.replace('MODEL = "trocrscratch"', 'MODEL = "trocrscratchreg"')
+    .replace('"init": "random",', '"init": "random", "dropout": 0.1, "mask_ratio": 0.4, "mask_span_cols": 1,'))
+assert SCRATCHREG_CFG.count("trocrscratchreg") == 1 and SCRATCHREG_CFG.count("mask_ratio") == 1
+SCRATCHREG_MODEL = SCRATCH_MODEL.replace(
+    "model = EncoderLinearCTC(AutoModel.from_config(enc_cfg)).to(device)\n",
+    "enc_cfg.hidden_dropout_prob = enc_cfg.attention_probs_dropout_prob = CONFIG[\"dropout\"]\n"
+    "model = EncoderLinearCTC(AutoModel.from_config(enc_cfg)).to(device)\n"
+    "def span_mask_hook(mod, inp, out):\n"
+    "    \"\"\"Training only: zero mask_ratio of the 16 px columns (all ROW_H//16 patches of a text row) in spans of mask_span_cols.\"\"\"\n"
+    "    if not mod.training or CONFIG[\"mask_ratio\"] <= 0: return out\n"
+    "    B, k, span = out.shape[0], ROW_H // 16, CONFIG[\"mask_span_cols\"]; T = RROWS * 24\n"
+    "    n = max(1, int(T * CONFIG[\"mask_ratio\"] / span))\n"
+    "    st = torch.randint(0, max(1, T - span + 1), (B, n), device=out.device); m = torch.zeros(B, T, dtype=torch.bool, device=out.device)\n"
+    "    for o in range(span): m.scatter_(1, (st + o).clamp(max=T - 1), True)\n"
+    "    m = m.view(B, RROWS, 1, 24).expand(B, RROWS, k, 24).reshape(B, RROWS * k * 24)   # column mask -> patch mask (24x24 row-major)\n"
+    "    m = torch.cat([m, m.new_zeros(B, out.shape[1] - m.shape[1])], 1)                   # patch rows below RROWS*k: never masked\n"
+    "    return out.masked_fill(m[..., None], 0.0)\n"
+    "model.vit.embeddings.patch_embeddings.register_forward_hook(span_mask_hook)\n"
+    "print(f\"regularised: dropout {CONFIG['dropout']}, span masking {CONFIG['mask_ratio']} of {RROWS * 24} columns\")\n")
+assert SCRATCHREG_MODEL.count("span_mask_hook") == 2
+
 # ------------------------------------------------------------------ HTR-VT
 HTRVT_PARAMS = TROCR_PARAMS
 HTRVT_CFG = r'''
@@ -363,6 +388,12 @@ TSC = training_nb("TrOCR-small architecture, RANDOM init + linear CTC head (from
                   "with HTR-VT's schedule (AdamW lr 5e-4, wd 0.05, warm-up 5% + cosine to 1%, 300 epochs, batch 32). Question: does "
                   "pretraining explain why the metrics predict HTR-VT's CER but not TrOCR's? " + COMMON, TROCR_PARAMS,
                   SCRATCH_CFG, TROCR_FMT, SCRATCH_MODEL)
+TSR = training_nb("Ladder A: TrOCR-small architecture from scratch + HTR-VT regularisation (dropout + span masking), greedy",
+                  "Exactly `train_trocrscratch.ipynb` (random-init DeiT-small, tiling, linear CTC head, lr 5e-4, 300 epochs, cosine) plus "
+                  "HTR-VT's two regularisers: dropout 0.1 in the transformer (DeiT default 0.0) and span masking on the patch embeddings "
+                  "(40% of the 16 px columns zeroed during training, as HTR-VT's mask_span 4 x 4 px). Question: is it the training regime "
+                  "(overfitting without regularisation) that makes the metrics fail on TrOCR, rather than the architecture? " + COMMON,
+                  TROCR_PARAMS, SCRATCHREG_CFG, TROCR_FMT, SCRATCHREG_MODEL)
 HTV = training_nb("HTR-VT (CNN + transformer + CTC, from scratch), greedy",
                   "Our implementation after HTR-VT (Li et al., Pattern Recognition 2025): residual CNN front-end, span masking, 6-layer "
                   "transformer encoder (dim 384), linear CTC head, trained from scratch, 300 epochs fixed (dev curve logged to check the budget). "
@@ -375,7 +406,8 @@ import papermill as pm
 from huggingface_hub import HfApi, hf_hub_download
 WAVE = "__WAVE__"
 RUNS = __RUNS__   # (model, condition, seed)
-NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb", "trocrscratch": "train_trocrscratch.ipynb"}
+NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb", "trocrscratch": "train_trocrscratch.ipynb",
+      "trocrscratchreg": "train_trocrscratchreg.ipynb"}
 HERE = os.getcwd(); BASE = os.path.expanduser(f"~/work/hmt_{WAVE}"); os.makedirs(BASE, exist_ok=True)
 api = HfApi(); LOGS = "cyttic/a5000-queue-logs"   # PUBLIC dataset: executed notebooks of failed runs (tracebacks)
 api.create_repo(LOGS, repo_type="dataset", private=False, exist_ok=True)
@@ -431,10 +463,17 @@ QUEUE_SC = queue_nb("scratchcheck", RUNS_SC, "Feasibility check: the TrOCR-small
 QUEUE3 = queue_nb("wave3", RUNS3, "TrOCR-small architecture FROM SCRATCH (`train_trocrscratch.ipynb`, random init, 300 epochs, ~1.25 h each), "
                   "seed 42, all 17 conditions. The 3 scratch-check runs (none, geom2, elastic4) are already on HF and are skipped: 14 new runs, "
                   "~18 h.")
+RUNS_LA = [("trocrscratchreg", c, 42) for c in CONDS]
+QUEUE_LA = queue_nb("ladderA", RUNS_LA, "Ladder step A: the wave-3 from-scratch TrOCR-small plus HTR-VT's dropout and span masking "
+                    "(`train_trocrscratchreg.ipynb`, 300 epochs, ~1.3 h each), seed 42, all 17 conditions: ~22 h. Compared with wave 3 "
+                    "(`trocrscratch`) in the leave-one-family-out test, it tells whether the regime or the architecture breaks the metrics.")
 
-for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
-                  ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
-                  ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC), ("queue_wave3.ipynb", QUEUE3)):
-    json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print("->", os.path.join(HERE, name))
-print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check |", len(RUNS3), "runs in wave 3")
+if __name__ == "__main__":   # importable: make_model_aware_notebook.py reuses the model / fmt sources above
+    for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
+                      ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
+                      ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC), ("queue_wave3.ipynb", QUEUE3),
+                      ("train_trocrscratchreg.ipynb", TSR), ("queue_ladderA.ipynb", QUEUE_LA)):
+        json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print("->", os.path.join(HERE, name))
+    print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check |", len(RUNS3),
+          "runs in wave 3 |", len(RUNS_LA), "runs in ladder A")

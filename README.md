@@ -16,7 +16,10 @@ language model. Results go to Hugging Face (public); this repo holds code only.
 | `train_trocrscratch.ipynb` | TrOCR-small architecture, random init + linear CTC head, from scratch (HTR-VT schedule: lr 5e-4, 300 epochs) |
 | `queue_scratchcheck.ipynb` | feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 -> `cyttic/hmt-trocrscratch-<cond>-s42` |
 | `queue_wave3.ipynb` | trocrscratch x all 17 conditions, seed 42 (the 3 scratch-check runs are skipped: 14 new runs, ~18 h) |
+| `train_trocrscratchreg.ipynb` / `queue_ladderA.ipynb` | ladder A: trocrscratch + HTR-VT's dropout 0.1 and span masking (40% of 16 px columns), 17 conditions, seed 42 (~22 h) |
 | `lofo.py` | leave-one-family-out test of the metrics against every run's test CER (local; writes `results/`, not in git) |
+| `model_aware.py` / `model_aware_kaggle.ipynb` (`make_model_aware_notebook.py`) | H2 probes on Kaggle 2x T4: each no-augmentation model's affinity (CER on augmented dev) + the metrics in its own feature space, then leave-one-family-out -> HF `cyttic/hmt-metrics` `model_aware/` |
+| `regret.py` | selection regret: pick the augmentation by the LOFO-predicted CER (within a family / among all 16) vs the truly best -> `results/regret.json` |
 
 Split: train = Option-B train minus the dev writers (20%, seed 42); dev = the unlabeled target sample for the metrics (also scored every
 few epochs as a learning curve, nothing selected on it); test = Option-B test, scored once after the last epoch.
