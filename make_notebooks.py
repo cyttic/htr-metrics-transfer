@@ -11,6 +11,7 @@
                           with HTR-VT's from-scratch schedule (lr 5e-4, wd 0.05, 300 epochs, cosine) -- does pretraining explain why the
                           metrics predict HTR-VT's CER but not TrOCR's?
    queue_scratchcheck.ipynb  feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 = 3 runs
+   queue_trocrctc_s43.ipynb  TrOCR-CTC x 17 conditions with seed 43 = 17 runs (reliability of TrOCR's CER ranking)
 
 Both training notebooks are parameterised (papermill cell tag "parameters": COND, SEED, REPO_DIR, ...) and import augment.py from
 the repo, the same file the metric computation uses. Data: cyttic/hhd-optionb-split (paragraph- and writer-disjoint). Train = Option-B
@@ -467,13 +468,20 @@ RUNS_LA = [("trocrscratchreg", c, 42) for c in CONDS]
 QUEUE_LA = queue_nb("ladderA", RUNS_LA, "Ladder step A: the wave-3 from-scratch TrOCR-small plus HTR-VT's dropout and span masking "
                     "(`train_trocrscratchreg.ipynb`, 300 epochs, ~1.3 h each), seed 42, all 17 conditions: ~22 h. Compared with wave 3 "
                     "(`trocrscratch`) in the leave-one-family-out test, it tells whether the regime or the architecture breaks the metrics.")
+RUNS_TS43 = [("trocrctc", c, 43) for c in CONDS]
+QUEUE_TS43 = queue_nb("trocrctc_s43", RUNS_TS43, "TrOCR-CTC (`train_trocrctc.ipynb`, pretrained TrOCR-base encoder + linear CTC head, 40 epochs, "
+                      "~23 min each) with seed 43 on all 17 conditions: ~6.5 h. The replication of the wave-1 TrOCR-CTC runs; the dev writers "
+                      "stay fixed (seed 42), so the seed changes only the head init, shuffling and augmentation draws. With seeds 42 + 43 it "
+                      "measures how reliable TrOCR's CER ranking across conditions is (between-condition vs between-seed variance), i.e. "
+                      "whether any metric could predict it.")
 
 if __name__ == "__main__":   # importable: make_model_aware_notebook.py reuses the model / fmt sources above
     for name, obj in (("train_trocrctc.ipynb", TRO), ("train_trocrsmall.ipynb", TRS), ("train_htrvt.ipynb", HTV),
                       ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
                       ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC), ("queue_wave3.ipynb", QUEUE3),
-                      ("train_trocrscratchreg.ipynb", TSR), ("queue_ladderA.ipynb", QUEUE_LA)):
+                      ("train_trocrscratchreg.ipynb", TSR), ("queue_ladderA.ipynb", QUEUE_LA),
+                      ("queue_trocrctc_s43.ipynb", QUEUE_TS43)):
         json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("->", os.path.join(HERE, name))
     print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check |", len(RUNS3),
-          "runs in wave 3 |", len(RUNS_LA), "runs in ladder A")
+          "runs in wave 3 |", len(RUNS_LA), "runs in ladder A |", len(RUNS_TS43), "runs in TrOCR-CTC seed 43")

@@ -62,12 +62,20 @@ def main():
          "htrvt_s42": [cer[f"htrvt-{c}-s42"] for c in CONDS], "htrvt_s43": [cer[f"htrvt-{c}-s43"] for c in CONDS]}
     if all(f"trocrscratchreg-{c}-s42" in cer for c in CONDS):          # ladder A, once all 17 runs are on HF
         Y["trocrscratchreg_s42"] = [cer[f"trocrscratchreg-{c}-s42"] for c in CONDS]
+    if all(f"trocrctc-{c}-s43" in cer for c in CONDS):                 # TrOCR-CTC seed 43, once all 17 runs are on HF
+        Y["trocrctc_s43"] = [cer[f"trocrctc-{c}-s43"] for c in CONDS]
+        Y["trocrctc_mean"] = list((np.array(Y["trocrctc_s42"]) + np.array(Y["trocrctc_s43"])) / 2)
     Y["htrvt_mean"] = list((np.array(Y["htrvt_s42"]) + np.array(Y["htrvt_s43"])) / 2)
     Y = {k: 100 * np.array(v) for k, v in Y.items()}
     a, b = Y["htrvt_s42"], Y["htrvt_s43"]
     out = {"htrvt_seed_agreement": {"spearman_16aug": float(spearmanr(a[aug], b[aug])[0]), "mean_abs_diff": float(np.abs(a - b).mean())}}
     print(f"HTR-VT s42 vs s43 on the 16 augmented conditions: rho {out['htrvt_seed_agreement']['spearman_16aug']:.4f}, "
           f"mean |diff| {out['htrvt_seed_agreement']['mean_abs_diff']:.2f} CER points")
+    if "trocrctc_s43" in Y:
+        a, b = Y["trocrctc_s42"], Y["trocrctc_s43"]
+        out["trocrctc_seed_agreement"] = {"spearman_16aug": float(spearmanr(a[aug], b[aug])[0]), "mean_abs_diff": float(np.abs(a - b).mean())}
+        print(f"TrOCR-CTC s42 vs s43 on the 16 augmented conditions: rho {out['trocrctc_seed_agreement']['spearman_16aug']:.4f}, "
+              f"mean |diff| {out['trocrctc_seed_agreement']['mean_abs_diff']:.2f} CER points")
 
     def best_ratio(y):
         b0 = mae(lofo(np.zeros((17, 0)), y), y)
