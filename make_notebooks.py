@@ -12,6 +12,7 @@
                           metrics predict HTR-VT's CER but not TrOCR's?
    queue_scratchcheck.ipynb  feasibility check: trocrscratch x (none, geom2, elastic4), seed 42 = 3 runs
    queue_trocrctc_s43.ipynb  TrOCR-CTC x 17 conditions with seed 43 = 17 runs (reliability of TrOCR's CER ranking)
+   train_trocrscratchline.ipynb / queue_ladderB.ipynb  ladder B: trocrscratch on one continuous 64 x 2304 line (no tiling), 17 runs
 
 Both training notebooks are parameterised (papermill cell tag "parameters": COND, SEED, REPO_DIR, ...) and import augment.py from
 the repo, the same file the metric computation uses. Data: cyttic/hhd-optionb-split (paragraph- and writer-disjoint). Train = Option-B
@@ -281,6 +282,37 @@ SCRATCHREG_MODEL = SCRATCH_MODEL.replace(
     "print(f\"regularised: dropout {CONFIG['dropout']}, span masking {CONFIG['mask_ratio']} of {RROWS * 24} columns\")\n")
 assert SCRATCHREG_MODEL.count("span_mask_hook") == 2
 
+# ------------------------------------------------------------------ ladder B: TrOCR scratch on ONE continuous line (no tiling)
+# Same random-init DeiT-small, schedule, CTC head and token count as trocrscratch (wave 3); ONLY the input layout changes. The tiled
+# square holds 6 text rows x 384 px = 2304 px of line as a 24 x 24 patch grid; here the same 2304 px are one 64 x 2304 strip = a
+# 4 x 144 patch grid: the same 576 patches, the same 144 frames (4 patch rows concatenated per 16 px column), the same cut at 2304 px,
+# but no wrap-around and a 1D left-to-right position layout. Built on wave 3 (no regularisation): ladder A's regularisers hurt.
+LINE_CFG = (SCRATCH_CFG.replace('MODEL = "trocrscratch"', 'MODEL = "trocrscratchline"')
+    .replace('"init": "random",', '"init": "random", "input": "one continuous 64 x 2304 strip (4 x 144 patches), no tiling",'))
+assert LINE_CFG.count("trocrscratchline") == 1 and LINE_CFG.count("continuous") == 1
+LINE_FMT = r"""
+C, P = 384, 16; RROWS = C // ROW_H; LINE_W = RROWS * C; MAX_COLS = LINE_W // P   # 2304 px = the tiled square's capacity -> 144 columns
+def fmt(g):
+    \"\"\"64 px gray line -> mirror (RTL -> LTR) -> ONE continuous 64 x 2304 strip (cut at 2304 px, as the tiling cuts; white padding)
+    -> (3,64,2304) in [-1,1] + CTC length (identical to the tiled version's)\"\"\"
+    g = g[:, ::-1][:, :LINE_W]; nw = g.shape[1]; cont = np.full((ROW_H, LINE_W), 255, np.uint8); cont[:, :nw] = g
+    t = torch.from_numpy(cont).float().div(255).sub(0.5).div(0.5).unsqueeze(0).expand(3, ROW_H, LINE_W).contiguous()
+    return t, min(MAX_COLS, math.ceil(nw / P)) * SUB
+def collate(b):
+    return torch.stack([x[0] for x in b]), torch.tensor([x[1] for x in b]), [x[2] for x in b], [x[3] for x in b]
+""".replace('\\"', '"')
+LINE_MODEL = (SCRATCH_MODEL
+    .replace("        g = tok.reshape(B, 24, 24, self.Hd)[:, :RROWS * self.k]\n"
+             "        g = g.reshape(B, RROWS, self.k, 24, self.Hd).permute(0, 1, 3, 2, 4).reshape(B, RROWS * 24, self.k * self.Hd)\n",
+             "        g = tok.reshape(B, self.k, MAX_COLS, self.Hd).permute(0, 2, 1, 3).reshape(B, MAX_COLS, self.k * self.Hd)   # 4 x 144 grid -> 144 frames\n")
+    .replace("enc_cfg = VisionEncoderDecoderConfig.from_pretrained(ENC_CFG_SRC).encoder   # architecture only: NO pretrained weights\n",
+             "enc_cfg = VisionEncoderDecoderConfig.from_pretrained(ENC_CFG_SRC).encoder   # architecture only: NO pretrained weights\n"
+             "enc_cfg.image_size = (ROW_H, LINE_W)   # 64 x 2304 input: 4 x 144 = 576 patches, as many as the 24 x 24 tiled square\n"))
+LINE_MODEL = (LINE_MODEL.replace("# lens unused: every input is a full 384x384 square", "# lens unused: every input is a full 64x2304 strip")
+              .replace("ViT patch tokens (24x24) -> reading-order frames", "ViT patch tokens (4x144, one continuous line) -> reading-order frames"))
+assert LINE_MODEL.count("MAX_COLS, self.k * self.Hd") == 1 and LINE_MODEL.count("enc_cfg.image_size") == 1
+assert "RROWS * 24 * SUB" in LINE_MODEL   # RROWS * 24 == MAX_COLS == 144: the head reshape stays valid
+
 # ------------------------------------------------------------------ HTR-VT
 HTRVT_PARAMS = TROCR_PARAMS
 HTRVT_CFG = r'''
@@ -395,6 +427,12 @@ TSR = training_nb("Ladder A: TrOCR-small architecture from scratch + HTR-VT regu
                   "(40% of the 16 px columns zeroed during training, as HTR-VT's mask_span 4 x 4 px). Question: is it the training regime "
                   "(overfitting without regularisation) that makes the metrics fail on TrOCR, rather than the architecture? " + COMMON,
                   TROCR_PARAMS, SCRATCHREG_CFG, TROCR_FMT, SCRATCHREG_MODEL)
+TSL = training_nb("Ladder B: TrOCR-small architecture from scratch on ONE continuous line (no tiling), greedy",
+                  "Exactly `train_trocrscratch.ipynb` (random-init DeiT-small, linear CTC head, lr 5e-4, 300 epochs, cosine, no extra "
+                  "regularisation) except the input layout: the line is NOT wrapped into the 384x384 square but fed as one 64 x 2304 strip "
+                  "(4 x 144 patches of 16 px). Same 576 patches, same 144 CTC frames, same 2304 px cut as the tiled version; only the wrap-around "
+                  "and the 2D position layout are gone. Question: is it the tiling that makes the metrics fail on TrOCR (geom family "
+                  "mispredicted), as HTR-VT reads a continuous line? " + COMMON, TROCR_PARAMS, LINE_CFG, LINE_FMT, LINE_MODEL)
 HTV = training_nb("HTR-VT (CNN + transformer + CTC, from scratch), greedy",
                   "Our implementation after HTR-VT (Li et al., Pattern Recognition 2025): residual CNN front-end, span masking, 6-layer "
                   "transformer encoder (dim 384), linear CTC head, trained from scratch, 300 epochs fixed (dev curve logged to check the budget). "
@@ -408,7 +446,7 @@ from huggingface_hub import HfApi, hf_hub_download
 WAVE = "__WAVE__"
 RUNS = __RUNS__   # (model, condition, seed)
 NB = {"trocrctc": "train_trocrctc.ipynb", "trocrsmall": "train_trocrsmall.ipynb", "htrvt": "train_htrvt.ipynb", "trocrscratch": "train_trocrscratch.ipynb",
-      "trocrscratchreg": "train_trocrscratchreg.ipynb"}
+      "trocrscratchreg": "train_trocrscratchreg.ipynb", "trocrscratchline": "train_trocrscratchline.ipynb"}
 HERE = os.getcwd(); BASE = os.path.expanduser(f"~/work/hmt_{WAVE}"); os.makedirs(BASE, exist_ok=True)
 api = HfApi(); LOGS = "cyttic/a5000-queue-logs"   # PUBLIC dataset: executed notebooks of failed runs (tracebacks)
 api.create_repo(LOGS, repo_type="dataset", private=False, exist_ok=True)
@@ -468,6 +506,11 @@ RUNS_LA = [("trocrscratchreg", c, 42) for c in CONDS]
 QUEUE_LA = queue_nb("ladderA", RUNS_LA, "Ladder step A: the wave-3 from-scratch TrOCR-small plus HTR-VT's dropout and span masking "
                     "(`train_trocrscratchreg.ipynb`, 300 epochs, ~1.3 h each), seed 42, all 17 conditions: ~22 h. Compared with wave 3 "
                     "(`trocrscratch`) in the leave-one-family-out test, it tells whether the regime or the architecture breaks the metrics.")
+RUNS_LB = [("trocrscratchline", c, 42) for c in CONDS]
+QUEUE_LB = queue_nb("ladderB", RUNS_LB, "Ladder step B: the wave-3 from-scratch TrOCR-small (no extra regularisation) fed ONE continuous "
+                    "64 x 2304 line instead of the tiled 384x384 square (`train_trocrscratchline.ipynb`, 300 epochs, ~1.25 h each), seed 42, "
+                    "all 17 conditions: ~21 h. Compared with wave 3 (`trocrscratch`) in the leave-one-family-out test, it tells whether the "
+                    "tiling is what makes TrOCR's augmentation benefit unpredictable from the metrics.")
 RUNS_TS43 = [("trocrctc", c, 43) for c in CONDS]
 QUEUE_TS43 = queue_nb("trocrctc_s43", RUNS_TS43, "TrOCR-CTC (`train_trocrctc.ipynb`, pretrained TrOCR-base encoder + linear CTC head, 40 epochs, "
                       "~23 min each) with seed 43 on all 17 conditions: ~6.5 h. The replication of the wave-1 TrOCR-CTC runs; the dev writers "
@@ -480,8 +523,8 @@ if __name__ == "__main__":   # importable: make_model_aware_notebook.py reuses t
                       ("queue_wave1.ipynb", QUEUE), ("queue_wave2.ipynb", QUEUE2),
                       ("train_trocrscratch.ipynb", TSC), ("queue_scratchcheck.ipynb", QUEUE_SC), ("queue_wave3.ipynb", QUEUE3),
                       ("train_trocrscratchreg.ipynb", TSR), ("queue_ladderA.ipynb", QUEUE_LA),
-                      ("queue_trocrctc_s43.ipynb", QUEUE_TS43)):
+                      ("queue_trocrctc_s43.ipynb", QUEUE_TS43), ("train_trocrscratchline.ipynb", TSL), ("queue_ladderB.ipynb", QUEUE_LB)):
         json.dump(obj, open(os.path.join(HERE, name), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("->", os.path.join(HERE, name))
     print(len(RUNS1), "runs in wave 1 |", len(RUNS2), "runs in wave 2 |", len(RUNS_SC), "runs in the scratch check |", len(RUNS3),
-          "runs in wave 3 |", len(RUNS_LA), "runs in ladder A |", len(RUNS_TS43), "runs in TrOCR-CTC seed 43")
+          "runs in wave 3 |", len(RUNS_LA), "runs in ladder A |", len(RUNS_TS43), "runs in TrOCR-CTC seed 43 |", len(RUNS_LB), "runs in ladder B")

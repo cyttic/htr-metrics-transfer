@@ -62,6 +62,8 @@ def main():
          "htrvt_s42": [cer[f"htrvt-{c}-s42"] for c in CONDS], "htrvt_s43": [cer[f"htrvt-{c}-s43"] for c in CONDS]}
     if all(f"trocrscratchreg-{c}-s42" in cer for c in CONDS):          # ladder A, once all 17 runs are on HF
         Y["trocrscratchreg_s42"] = [cer[f"trocrscratchreg-{c}-s42"] for c in CONDS]
+    if all(f"trocrscratchline-{c}-s42" in cer for c in CONDS):         # ladder B, once all 17 runs are on HF
+        Y["trocrscratchline_s42"] = [cer[f"trocrscratchline-{c}-s42"] for c in CONDS]
     if all(f"trocrctc-{c}-s43" in cer for c in CONDS):                 # TrOCR-CTC seed 43, once all 17 runs are on HF
         Y["trocrctc_s43"] = [cer[f"trocrctc-{c}-s43"] for c in CONDS]
         Y["trocrctc_mean"] = list((np.array(Y["trocrctc_s42"]) + np.array(Y["trocrctc_s43"])) / 2)

@@ -48,6 +48,8 @@ def main():
          "trocrsmall_s42": "trocrsmall-{}-s42", "trocrscratch_s42": "trocrscratch-{}-s42"}
     Y = {k: 100 * np.array([cer[v.format(c)] for c in CONDS]) for k, v in Y.items()}
     Y["htrvt_mean"] = (Y["htrvt_s42"] + Y["htrvt_s43"]) / 2
+    if "trocrscratchline_s42" in best:                                  # ladder B, once lofo.py has scored it
+        Y["trocrscratchline_s42"] = 100 * np.array([cer[f"trocrscratchline-{c}-s42"] for c in CONDS]); TARGETS.append("trocrscratchline_s42")
     if "trocrscratchreg_s42" in best:                                   # ladder A, once lofo.py has scored it
         Y["trocrscratchreg_s42"] = 100 * np.array([cer[f"trocrscratchreg-{c}-s42"] for c in CONDS]); TARGETS.append("trocrscratchreg_s42")
 

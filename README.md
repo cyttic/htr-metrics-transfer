@@ -18,6 +18,8 @@ language model. Results go to Hugging Face (public); this repo holds code only.
 | `queue_wave3.ipynb` | trocrscratch x all 17 conditions, seed 42 (the 3 scratch-check runs are skipped: 14 new runs, ~18 h) |
 | `train_trocrscratchreg.ipynb` / `queue_ladderA.ipynb` | ladder A: trocrscratch + HTR-VT's dropout 0.1 and span masking (40% of 16 px columns), 17 conditions, seed 42 (~22 h) |
 | `queue_trocrctc_s43.ipynb` | TrOCR-CTC x 17 conditions, seed 43 (~6.5 h) -> `cyttic/hmt-trocrctc-<cond>-s43`: is TrOCR's CER ranking reliable enough to predict? |
+| `train_trocrscratchline.ipynb` / `queue_ladderB.ipynb` | ladder B: trocrscratch (wave 3, no extra regularisation) on ONE continuous 64 x 2304 line instead of the tiled 384x384 square (same 576 patches / 144 frames), 17 conditions, seed 42 (~21 h) -> `cyttic/hmt-trocrscratchline-<cond>-s42` |
+| `probe_raw.py` / `raw_probe_kaggle.ipynb` (`make_raw_probe_notebook.py`) | training-free probe on Kaggle 2x T4: the metrics in OFF-THE-SHELF encoder frame spaces (TrOCR-base / TrOCR-small as downloaded, random DeiT-small, CLIP B/16), leave-one-family-out vs every recognizer's CER -> HF `cyttic/hmt-metrics` `raw_probe/` |
 | `lofo.py` | leave-one-family-out test of the metrics against every run's test CER (local; writes `results/`, not in git) |
 | `model_aware.py` / `model_aware_kaggle.ipynb` (`make_model_aware_notebook.py`) | H2 probes on Kaggle 2x T4: each no-augmentation model's affinity (CER on augmented dev) + the metrics in its own feature space, then leave-one-family-out -> HF `cyttic/hmt-metrics` `model_aware/` |
 | `regret.py` | selection regret: pick the augmentation by the LOFO-predicted CER (within a family / among all 16) vs the truly best -> `results/regret.json` |
